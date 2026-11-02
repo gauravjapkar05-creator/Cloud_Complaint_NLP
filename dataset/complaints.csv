@@ -1,0 +1,47 @@
+complaint,category
+"The college bus is always late",Transport
+"Bus service is not available on time",Transport
+"The college bus timing is not convenient",Transport
+"The bus is overcrowded",Transport
+"Transport facility is not available",Transport
+"Bus driver is driving very slowly",Transport
+"The hostel room is dirty",Hostel
+"There is no proper water supply in hostel",Hostel
+"Hostel bathroom is not clean",Hostel
+"Hostel food quality is poor",Hostel
+"Hostel WiFi is not working",Hostel
+"Hostel room needs maintenance",Hostel
+"Library does not have enough books",Library
+"Required book is not available in library",Library
+"Library computer is not working",Library
+"Library should remain open longer",Library
+"There are not enough seats in library",Library
+"Library books are not arranged properly",Library
+"Teacher has not uploaded assignment",Academic
+"The timetable has overlapping lectures",Academic
+"Marks are not updated correctly",Academic
+"We need more practical sessions",Academic
+"Exam schedule is not clear",Academic
+"Study material is not available",Academic
+"Canteen food is expensive",Canteen
+"Canteen food quality is poor",Canteen
+"Canteen is not clean",Canteen
+"There are not enough tables in canteen",Canteen
+"Drinking water is not available near canteen",Canteen
+"Canteen service is very slow",Canteen
+"Classroom fans are not working",Infrastructure
+"Classroom lights are broken",Infrastructure
+"College building needs maintenance",Infrastructure
+"Projector is not working",Infrastructure
+"Classroom benches are damaged",Infrastructure
+"Washroom needs maintenance",Infrastructure
+"College road needs repair",Infrastructure
+"Laboratory equipment is damaged",Infrastructure
+"Computer lab systems are not working",Infrastructure
+"Network connection is not available in lab",Infrastructure
+"Admin office service is very slow",Administration
+"Bonafide certificate is not issued on time",Administration
+"Admission information is not clear",Administration
+"Fee payment issue needs to be resolved",Administration
+"Student records are not updated",Administration
+"Office staff are not responding properly",Administration
