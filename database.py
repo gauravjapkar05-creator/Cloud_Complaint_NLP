@@ -1,334 +1,296 @@
+
 import os
+import streamlit as st
 import psycopg2
 import bcrypt
-import streamlit as st
 
-
-# ==========================================
-# DATABASE CONNECTION
-# ==========================================
 
 def get_connection():
-    """
-    Connect to Supabase PostgreSQL database.
-    """
-
     try:
-        database_url = st.secrets["DATABASE_URL"]
+        database_url = st.secrets.get("DATABASE_URL", "")
     except Exception:
-        database_url = os.getenv("DATABASE_URL")
+        database_url = os.getenv("DATABASE_URL", "")
 
     if not database_url:
-        raise Exception(
-            "DATABASE_URL not found. Please check .streamlit/secrets.toml"
-        )
+        raise Exception("DATABASE_URL is missing in Streamlit Secrets.")
 
-    return psycopg2.connect(database_url)
+    return psycopg2.connect(
+        database_url,
+        sslmode="require",
+        connect_timeout=15
+    )
 
-
-# ==========================================
-# CREATE TABLES
-# ==========================================
 
 def create_tables():
-
     conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS students (
-            id SERIAL PRIMARY KEY,
-            name VARCHAR(100) NOT NULL,
-            email VARCHAR(150) UNIQUE NOT NULL,
-            password VARCHAR(255) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS complaints (
-            id SERIAL PRIMARY KEY,
-            student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
-            complaint TEXT NOT NULL,
-            category VARCHAR(100),
-            sentiment VARCHAR(50),
-            priority VARCHAR(50),
-            department VARCHAR(100),
-            status VARCHAR(50) DEFAULT 'Pending',
-            remarks TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-
-# ==========================================
-# STUDENT REGISTRATION
-# ==========================================
-
-def register_student(name, email, password):
-
-    conn = get_connection()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
     try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS students (
+                id BIGSERIAL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                email VARCHAR(150) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS complaints (
+                id BIGSERIAL PRIMARY KEY,
+                student_id BIGINT REFERENCES students(id) ON DELETE CASCADE,
+                complaint TEXT NOT NULL,
+                category VARCHAR(100),
+                sentiment VARCHAR(50),
+                priority VARCHAR(50),
+                department VARCHAR(100),
+                status VARCHAR(50) DEFAULT 'Pending',
+                remarks TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Add columns required by the current app.
+        cur.execute("""
+            ALTER TABLE complaints
+            ADD COLUMN IF NOT EXISTS student_name VARCHAR(100)
+        """)
+        cur.execute("""
+            ALTER TABLE complaints
+            ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION DEFAULT 0
+        """)
+        cur.execute("""
+            ALTER TABLE complaints
+            ADD COLUMN IF NOT EXISTS duplicate_of BIGINT
+        """)
+        cur.execute("""
+            ALTER TABLE complaints
+            ADD COLUMN IF NOT EXISTS similarity DOUBLE PRECISION DEFAULT 0
+        """)
+
+        # Keep older complaint records compatible.
+        cur.execute("""
+            UPDATE complaints c
+            SET student_name = s.name
+            FROM students s
+            WHERE c.student_id = s.id
+              AND (c.student_name IS NULL OR c.student_name = '')
+        """)
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+def register_student(name, email, password):
+    name = name.strip()
+    email = email.strip().lower()
+
+    if not name or not email or not password:
+        return False, "All fields are required."
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute(
+            "SELECT id FROM students WHERE LOWER(email) = %s",
+            (email,)
+        )
+
+        if cur.fetchone():
+            return False, "Email already registered. Please log in."
+
         hashed_password = bcrypt.hashpw(
             password.encode("utf-8"),
             bcrypt.gensalt()
         ).decode("utf-8")
 
-        cursor.execute("""
+        cur.execute("""
             INSERT INTO students (name, email, password)
             VALUES (%s, %s, %s)
-            RETURNING id;
         """, (name, email, hashed_password))
 
-        student_id = cursor.fetchone()[0]
-
         conn.commit()
+        return True, "Registration successful!"
 
-        return True, student_id
-
-    except psycopg2.errors.UniqueViolation:
-
+    except Exception:
         conn.rollback()
-
-        return False, "Email already registered."
-
-    except Exception as e:
-
-        conn.rollback()
-
-        return False, str(e)
+        raise
 
     finally:
-
-        cursor.close()
+        cur.close()
         conn.close()
 
 
-# ==========================================
-# STUDENT LOGIN
-# ==========================================
+def login_student(name, password):
+    name = name.strip()
 
-def login_student(email, password):
+    if not name or not password:
+        return None
 
     conn = get_connection()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
     try:
-
-        cursor.execute("""
+        cur.execute("""
             SELECT id, name, email, password
             FROM students
-            WHERE email = %s;
-        """, (email,))
+            WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s))
+            ORDER BY id DESC
+            LIMIT 1
+        """, (name,))
 
-        student = cursor.fetchone()
+        student = cur.fetchone()
 
-        if student is None:
+        if not student:
             return None
 
-        student_id, name, user_email, stored_password = student
+        stored_password = student[3]
+
+        if isinstance(stored_password, str):
+            stored_password = stored_password.encode("utf-8")
 
         if bcrypt.checkpw(
             password.encode("utf-8"),
-            stored_password.encode("utf-8")
+            stored_password
         ):
-
-            return {
-                "id": student_id,
-                "name": name,
-                "email": user_email
-            }
+            return (student[1], student[0], student[2])
 
         return None
 
     finally:
-
-        cursor.close()
+        cur.close()
         conn.close()
 
 
-# ==========================================
-# ADD COMPLAINT
-# ==========================================
-
 def add_complaint(
-    student_id,
+    student_name,
     complaint,
     category,
     sentiment,
     priority,
-    department
+    department,
+    confidence=0,
+    status="Pending",
+    duplicate_of=None,
+    similarity=0
 ):
-
     conn = get_connection()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
     try:
+        cur.execute("""
+            SELECT id FROM students
+            WHERE LOWER(TRIM(name)) = LOWER(TRIM(%s))
+            ORDER BY id DESC
+            LIMIT 1
+        """, (student_name,))
 
-        cursor.execute("""
-            INSERT INTO complaints
-            (
-                student_id,
-                complaint,
-                category,
-                sentiment,
-                priority,
-                department
+        student = cur.fetchone()
+
+        if not student:
+            raise Exception("Student account not found.")
+
+        cur.execute("""
+            INSERT INTO complaints (
+                student_id, student_name, complaint,
+                category, sentiment, priority, department,
+                confidence, status, duplicate_of, similarity
             )
-            VALUES (%s, %s, %s, %s, %s, %s)
-            RETURNING id;
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
         """, (
-            student_id,
-            complaint,
-            category,
-            sentiment,
-            priority,
-            department
+            student[0], student_name, complaint,
+            category, sentiment, priority, department,
+            confidence, status, duplicate_of, similarity
         ))
 
-        complaint_id = cursor.fetchone()[0]
-
+        complaint_id = cur.fetchone()[0]
         conn.commit()
-
         return complaint_id
 
-    except Exception as e:
-
+    except Exception:
         conn.rollback()
-
-        raise e
+        raise
 
     finally:
-
-        cursor.close()
+        cur.close()
         conn.close()
 
 
-# ==========================================
-# GET STUDENT COMPLAINTS
-# ==========================================
-
-def get_student_complaints(student_id):
-
+def get_student_complaints(student_name):
     conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT
-            id,
-            complaint,
-            category,
-            sentiment,
-            priority,
-            department,
-            status,
-            remarks,
-            created_at
-        FROM complaints
-        WHERE student_id = %s
-        ORDER BY created_at DESC;
-    """, (student_id,))
-
-    complaints = cursor.fetchall()
-
-    cursor.close()
-    conn.close()
-
-    return complaints
-
-
-# ==========================================
-# GET ALL COMPLAINTS
-# ==========================================
-
-def get_all_complaints():
-
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT
-            c.id,
-            s.name,
-            s.email,
-            c.complaint,
-            c.category,
-            c.sentiment,
-            c.priority,
-            c.department,
-            c.status,
-            c.remarks,
-            c.created_at
-        FROM complaints c
-        JOIN students s
-        ON c.student_id = s.id
-        ORDER BY c.created_at DESC;
-    """)
-
-    complaints = cursor.fetchall()
-
-    cursor.close()
-    conn.close()
-
-    return complaints
-
-
-# ==========================================
-# UPDATE COMPLAINT STATUS
-# ==========================================
-
-def update_complaint_status(
-    complaint_id,
-    status,
-    remarks=""
-):
-
-    conn = get_connection()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
     try:
+        cur.execute("""
+            SELECT
+                id, complaint, category, sentiment, priority,
+                department, confidence, status, duplicate_of,
+                similarity, remarks, created_at
+            FROM complaints
+            WHERE LOWER(TRIM(student_name)) = LOWER(TRIM(%s))
+            ORDER BY created_at DESC
+        """, (student_name,))
 
-        cursor.execute("""
+        return cur.fetchall()
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+def get_all_complaints():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+            SELECT
+                id, student_name, complaint, category,
+                sentiment, priority, department, confidence,
+                status, duplicate_of, similarity, remarks,
+                created_at
+            FROM complaints
+            ORDER BY created_at DESC
+        """)
+
+        return cur.fetchall()
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+def update_complaint_status(complaint_id, status, remarks):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
             UPDATE complaints
-            SET
-                status = %s,
-                remarks = %s
-            WHERE id = %s;
-        """, (
-            status,
-            remarks,
-            complaint_id
-        ))
+            SET status = %s, remarks = %s
+            WHERE id = %s
+        """, (status, remarks, complaint_id))
 
         conn.commit()
 
-        return True
-
-    except Exception as e:
-
+    except Exception:
         conn.rollback()
-
-        print("Error:", e)
-
-        return False
+        raise
 
     finally:
-
-        cursor.close()
+        cur.close()
         conn.close()
 
 
-# ==========================================
-# INITIALIZE DATABASE
-# ==========================================
-
-try:
-    create_tables()
-except Exception as e:
-    print("Database initialization error:", e)
+# Create / migrate tables when the app starts.
+create_tables()
